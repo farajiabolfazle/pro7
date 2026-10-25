@@ -217,7 +217,7 @@ public class VideoInjector implements SurfaceTexture.OnFrameAvailableListener {
                     long want = Ctrl.positionMs;
                     if (want >= 0 && Math.abs(want - curPtsMs) > 1500) {
                         dec.flush();
-                        ex.seekTo(want * 1000, MediaExtractor.SEEK_TO_PREV_SYNC);
+                        ex.seekTo(want * 1000, MediaExtractor.SEEK_TO_PREVIOUS_SYNC);
                         ptsBase = -1;
                         feeding = true;
                         curPtsMs = want;
