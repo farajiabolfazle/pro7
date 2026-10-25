@@ -8,6 +8,7 @@ import android.view.Surface;
 
 import java.io.File;
 import java.io.FileReader;
+import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -96,7 +97,12 @@ public class XposedEntry implements IXposedHookLoadPackage {
                     if (img != null) img.close();
                 } catch (Throwable ignored) {}
             }, drainHandler);
-            DUMMIES.computeIfAbsent(pkg, k -> new CopyOnWriteArrayList<>()).add(reader);
+            List<ImageReader> list = DUMMIES.get(pkg);
+            if (list == null) {
+                list = new CopyOnWriteArrayList<>();
+                DUMMIES.put(pkg, list);
+            }
+            list.add(reader);
             return reader.getSurface();
         } catch (Throwable t) {
             XposedBridge.log("vcam: dummy create failed " + t);
@@ -109,6 +115,80 @@ public class XposedEntry implements IXposedHookLoadPackage {
         if (list == null) return;
         for (ImageReader r : list) {
             try { r.close(); } catch (Throwable ignored) {}
+        }
+    }
+
+    /**
+     * Reflectively find the Surface field inside an OutputConfiguration and
+     * replace it with our dummy. Works regardless of vendor field renames.
+     * Also rewrites any List<Surface> fields (shared surfaces).
+     */
+    private static boolean swapOutputSurface(Object oc, Surface dummy) {
+        boolean swapped = false;
+        try {
+            Class<?> cls = oc.getClass();
+            StringBuilder names = new StringBuilder();
+            for (Field f : cls.getDeclaredFields()) {
+                names.append(f.getName()).append("(").append(f.getType().getSimpleName()).append(") ");
+            }
+            XposedBridge.log("vcam: OutputConfiguration fields: " + names);
+
+            for (Field f : cls.getDeclaredFields()) {
+                try {
+                    f.setAccessible(true);
+                    if (Surface.class.isAssignableFrom(f.getType())) {
+                        Object cur = f.get(oc);
+                        if (cur != null) {
+                            f.set(oc, dummy);
+                            XposedBridge.log("vcam: swapped field " + f.getName());
+                            swapped = true;
+                        }
+                    } else if (List.class.isAssignableFrom(f.getType())) {
+                        Object val = f.get(oc);
+                        if (val instanceof List) {
+                            @SuppressWarnings("unchecked")
+                            List<Object> l = (List<Object>) val;
+                            boolean hasSurface = false;
+                            for (Object o : l) if (o instanceof Surface) { hasSurface = true; break; }
+                            if (hasSurface) {
+                                for (int i = 0; i < l.size(); i++) l.set(i, dummy);
+                                XposedBridge.log("vcam: rewrote list field " + f.getName());
+                            }
+                        }
+                    }
+                } catch (Throwable t) {
+                    XposedBridge.log("vcam: field " + f.getName() + " swap error " + t);
+                }
+            }
+        } catch (Throwable t) {
+            XposedBridge.log("vcam: reflective swap failed");
+            XposedBridge.log(t);
+        }
+        return swapped;
+    }
+
+    /** Swap all output surfaces of a session config with dummies and attach the injector. */
+    private static void injectIntoConfigs(String pkg, List<?> outConfigs) {
+        XposedBridge.log("vcam: " + outConfigs.size() + " output surfaces");
+        releaseDummies(pkg);
+        for (Object oc : outConfigs) {
+            Surface orig = null;
+            try {
+                orig = (Surface) XposedHelpers.callMethod(oc, "getSurface");
+            } catch (Throwable t) {
+                XposedBridge.log("vcam: getSurface failed " + t);
+            }
+            if (orig == null) {
+                XposedBridge.log("vcam: skipping null (deferred) surface");
+                continue;
+            }
+            Surface dummy = makeDummy(pkg);
+            if (dummy == null) continue;
+            if (!swapOutputSurface(oc, dummy)) {
+                XposedBridge.log("vcam: could NOT swap surface " + orig + " — camera will keep writing to it");
+            }
+            XposedBridge.log("vcam: injecting video into original surface " + orig);
+            VideoInjector.attach(pkg, orig, videoPath);
         }
     }
 
@@ -138,42 +218,47 @@ public class XposedEntry implements IXposedHookLoadPackage {
                                 @SuppressWarnings("unchecked")
                                 List<Object> outConfigs =
                                         (List<Object>) XposedHelpers.callMethod(config, "getOutputConfigurations");
-                                XposedBridge.log("vcam: " + outConfigs.size() + " output surfaces");
-                                releaseDummies(lpparam.packageName);
-                                for (Object oc : outConfigs) {
-                                    Surface orig = (Surface) XposedHelpers.callMethod(oc, "getSurface");
-                                    if (orig == null) {
-                                        XposedBridge.log("vcam: skipping null (deferred) surface");
-                                        continue;
-                                    }
-                                    Surface dummy = makeDummy(lpparam.packageName);
-                                    if (dummy == null) continue;
-                                    // swap the surface inside OutputConfiguration
-                                    try {
-                                        XposedHelpers.setObjectField(oc, "mSurface", dummy);
-                                    } catch (Throwable t) {
-                                        XposedBridge.log("vcam: swap mSurface failed " + t);
-                                        continue;
-                                    }
-                                    try {
-                                        @SuppressWarnings("unchecked")
-                                        List<Surface> shared =
-                                                (List<Surface>) XposedHelpers.getObjectField(oc, "mSurfaces");
-                                        if (shared != null) {
-                                            for (int i = 0; i < shared.size(); i++) shared.set(i, dummy);
-                                        }
-                                    } catch (Throwable ignored) {}
-                                    XposedBridge.log("vcam: swapped surface, injecting video into original " + orig);
-                                    VideoInjector.attach(lpparam.packageName, orig, videoPath);
-                                }
+                                injectIntoConfigs(lpparam.packageName, outConfigs);
                             } catch (Throwable t) {
-                                XposedBridge.log("vcam: session hook error " + t);
+                                XposedBridge.log("vcam: session hook error");
+                                XposedBridge.log(t);
                             }
                         }
                     });
             XposedBridge.log("vcam: SessionConfiguration hook installed in " + lpparam.packageName);
         } catch (Throwable t) {
             XposedBridge.log("vcam: camera2 SessionConfiguration hook missing " + t);
+        }
+
+        // ---- Camera2 internal: createCaptureSessionByOutputConfigurations(List) ----
+        try {
+            XposedHelpers.findAndHookMethod(
+                    "android.hardware.camera2.impl.CameraDeviceImpl",
+                    lpparam.classLoader,
+                    "createCaptureSessionByOutputConfigurations",
+                    List.class,
+                    "android.hardware.camera2.CameraCaptureSession$StateCallback",
+                    "android.os.Handler",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            XposedBridge.log("vcam: createCaptureSessionByOutputConfigurations fired in " + lpparam.packageName);
+                            reloadConfig();
+                            logConfigState(lpparam.packageName);
+                            if (!enabled) return;
+                            try {
+                                @SuppressWarnings("unchecked")
+                                List<Object> outConfigs = (List<Object>) param.args[0];
+                                injectIntoConfigs(lpparam.packageName, outConfigs);
+                            } catch (Throwable t) {
+                                XposedBridge.log("vcam: byOutputConfigurations hook error");
+                                XposedBridge.log(t);
+                            }
+                        }
+                    });
+            XposedBridge.log("vcam: byOutputConfigurations hook installed in " + lpparam.packageName);
+        } catch (Throwable t) {
+            XposedBridge.log("vcam: byOutputConfigurations hook missing " + t);
         }
 
         // ---- Camera2 legacy: createCaptureSession(List<Surface>, StateCallback, Handler) ----
@@ -200,19 +285,19 @@ public class XposedEntry implements IXposedHookLoadPackage {
                                     Surface orig = outputs.get(i);
                                     if (orig == null) continue;
                                     Surface dummy = makeDummy(lpparam.packageName);
-                                    if (dummy != null) {
-                                        try {
-                                            outputs.set(i, dummy);
-                                        } catch (Throwable t) {
-                                            XposedBridge.log("vcam: list swap failed " + t);
-                                            continue;
-                                        }
-                                    } else continue;
-                                    XposedBridge.log("vcam: swapped surface, injecting video into original " + orig);
+                                    if (dummy == null) continue;
+                                    try {
+                                        outputs.set(i, dummy);
+                                    } catch (Throwable t) {
+                                        XposedBridge.log("vcam: list swap failed " + t);
+                                        continue;
+                                    }
+                                    XposedBridge.log("vcam: swapped list surface, injecting video into original " + orig);
                                     VideoInjector.attach(lpparam.packageName, orig, videoPath);
                                 }
                             } catch (Throwable t) {
-                                XposedBridge.log("vcam: legacy session hook error " + t);
+                                XposedBridge.log("vcam: legacy session hook error");
+                                XposedBridge.log(t);
                             }
                         }
                     });
@@ -236,7 +321,7 @@ public class XposedEntry implements IXposedHookLoadPackage {
                     });
         } catch (Throwable ignored) {}
 
-        // ---- Camera1 (legacy apps): swap the preview display surface ----
+        // ---- Camera1 (legacy apps) ----
         try {
             XposedHelpers.findAndHookMethod(
                     "android.hardware.Camera",
@@ -254,8 +339,6 @@ public class XposedEntry implements IXposedHookLoadPackage {
                                 Object holder = param.args[0];
                                 Surface orig = (Surface) XposedHelpers.callMethod(holder, "getSurface");
                                 if (orig == null) return;
-                                // Camera1 writes straight into the holder's surface, which we
-                                // cannot swap here; just attach the injector to it as well.
                                 VideoInjector.attach(lpparam.packageName, orig, videoPath);
                             } catch (Throwable t) {
                                 XposedBridge.log("vcam: camera1 hook error " + t);
