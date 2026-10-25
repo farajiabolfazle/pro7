@@ -1,6 +1,6 @@
 package com.hoosha.vcam;
 
-import android.media.ImageFormat;
+import android.graphics.ImageFormat;
 import android.media.ImageReader;
 import android.os.Handler;
 import android.os.HandlerThread;
