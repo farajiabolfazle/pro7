@@ -43,6 +43,7 @@ public class VideoToFrames implements Runnable {
     private Thread childThread;
     private Surface playSurface;
     private android.content.res.AssetFileDescriptor afd;
+    public volatile boolean dead = false;
 
     private Callback callback;
 
@@ -92,6 +93,9 @@ public class VideoToFrames implements Runnable {
             videoDecode(videoFilePath);
         } catch (Throwable t) {
             throwable = t;
+        } finally {
+            dead = true;
+            XposedBridge.log("vcam: [decoder] thread exit");
         }
     }
 

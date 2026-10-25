@@ -541,8 +541,12 @@ public class XposedEntry implements IXposedHookLoadPackage {
         return mp;
     }
 
+    private static boolean safePlaying(MediaPlayer mp) {
+        try { return mp != null && mp.isPlaying(); } catch (Throwable t) { return false; }
+    }
+
     private static void startCamera2Playback() {
-        if (readerSurface != null && (decoder == null || decoderSurface != readerSurface)) {
+        if (readerSurface != null && (decoder == null || decoder.dead || decoderSurface != readerSurface)) {
             if (decoder != null) { decoder.stopDecode(); decoder = null; }
             decoder = new VideoToFrames();
             decoderSurface = readerSurface;
@@ -557,7 +561,7 @@ public class XposedEntry implements IXposedHookLoadPackage {
                 XposedBridge.log("vcam: reader decoder error " + t);
             }
         }
-        if (readerSurface1 != null && (decoder1 == null || decoder1Surface != readerSurface1)) {
+        if (readerSurface1 != null && (decoder1 == null || decoder1.dead || decoder1Surface != readerSurface1)) {
             if (decoder1 != null) { decoder1.stopDecode(); decoder1 = null; }
             decoder1 = new VideoToFrames();
             decoder1Surface = readerSurface1;
@@ -572,12 +576,12 @@ public class XposedEntry implements IXposedHookLoadPackage {
                 XposedBridge.log("vcam: reader1 decoder error " + t);
             }
         }
-        if (previewSurface != null && (player == null || playerSurface != previewSurface)) {
+        if (previewSurface != null && (player == null || playerSurface != previewSurface || !safePlaying(player))) {
             if (player != null) { try { player.release(); } catch (Throwable ignored) {} }
             playerSurface = previewSurface;
             player = loopInto(previewSurface);
         }
-        if (previewSurface1 != null && (player1 == null || player1Surface != previewSurface1)) {
+        if (previewSurface1 != null && (player1 == null || player1Surface != previewSurface1 || !safePlaying(player1))) {
             if (player1 != null) { try { player1.release(); } catch (Throwable ignored) {} }
             player1Surface = previewSurface1;
             player1 = loopInto(previewSurface1);
