@@ -1,0 +1,5 @@
+// Root build file. AGP version is pinned here so the project builds
+// standalone with plain Gradle (no Android Studio needed).
+plugins {
+    id 'com.android.application' version '8.5.2' apply false
+}
