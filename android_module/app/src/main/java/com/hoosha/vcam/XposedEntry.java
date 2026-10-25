@@ -513,7 +513,7 @@ public class XposedEntry implements IXposedHookLoadPackage {
     private static AssetFileDescriptor openVideoFd() {
         if (appContext == null) return null;
         try {
-            return appContext.getContentResolver().openAssetFile(
+            return appContext.getContentResolver().openAssetFileDescriptor(
                     Uri.parse("content://" + VcamProvider.AUTH + "/video"), "r");
         } catch (Throwable t) {
             return null;
