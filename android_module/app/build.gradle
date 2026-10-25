@@ -1,0 +1,21 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.hoosha.vcam'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.hoosha.vcam"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+}
+
+// The Xposed API is compile-only: LSPosed provides the real classes at
+// runtime on the device. The jar must NOT be packaged inside the APK,
+// otherwise LSPosed refuses to load the module.
+dependencies {
+    compileOnly 'de.robv.android.xposed:api:82'
+}
